@@ -22,13 +22,17 @@ static PASSWORD_CACHE: OnceLock<Mutex<HashMap<String, SecretString>>> =
 
 fn get_cached_password(host: &str) -> Option<SecretString> {
   let cache = PASSWORD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-  let guard = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+  let guard = cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   guard.get(host).cloned()
 }
 
 fn cache_password(host: &str, password: SecretString) {
   let cache = PASSWORD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-  let mut guard = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+  let mut guard = cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
   guard.insert(host.to_string(), password);
 }
 
@@ -284,12 +288,20 @@ impl Command {
     }
 
     // Only propagate HOME for non-elevated commands
-    if self.elevate.is_none() {
+    if self.elevate.is_none() && cfg!(not(target_os = "macos")) {
       if let Ok(home) = std::env::var("HOME") {
         self
           .env_vars
           .insert("HOME".to_string(), EnvAction::Set(home));
       }
+    }
+
+    // INFO: Setting HOME to "" for macos
+    // ref: https://github.com/NixOS/nix/blob/d5d7ca01b3dcf48f43819012c580cfb57cb08e47/src/libutil/unix/users.cc#L52
+    if cfg!(target_os = "macos") {
+      self
+        .env_vars
+        .insert("HOME".to_string(), EnvAction::Set("".to_string()));
     }
 
     // Preserve all variables in PRESERVE_ENV if present
@@ -834,9 +846,17 @@ mod tests {
     let cmd = Command::new("test").with_required_env();
 
     // Should preserve HOME and USER as Set actions
-    assert!(
-      matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val == "/test/home")
-    );
+    if cfg!(target_os = "macos") {
+      // macOS sets HOME to "" in Nix environment
+      assert!(
+        matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val.is_empty())
+      );
+    } else {
+      // Other OSes should have the actual HOME value
+      assert!(
+        matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val == "/test/home")
+      );
+    }
     assert!(
       matches!(cmd.env_vars.get("USER"), Some(EnvAction::Set(val)) if val == "testuser")
     );
@@ -871,7 +891,15 @@ mod tests {
     let cmd = Command::new("test").with_required_env();
 
     // Should not have HOME or USER in env_vars if they're not set
-    assert!(!cmd.env_vars.contains_key("HOME"));
+    if cfg!(target_os = "macos") {
+      // macOS sets HOME to "" in Nix environment
+      assert!(
+        matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val.is_empty())
+      );
+    } else {
+      // Other OSes should not have HOME set
+      assert!(!cmd.env_vars.contains_key("HOME"));
+    }
     assert!(!cmd.env_vars.contains_key("USER"));
 
     // Should preserve Nix-related variables if present
@@ -924,10 +952,17 @@ mod tests {
       .preserve_envs(["EXTRA_VAR"]);
 
     // Should have HOME from with_nix_env
-    assert!(
-      matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val == "/test/home")
-    );
-
+    if cfg!(target_os = "macos") {
+      // macOS sets HOME to "" in Nix environment
+      assert!(
+        matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val.is_empty())
+      );
+    } else {
+      // Other OSes should have the actual HOME value
+      assert!(
+        matches!(cmd.env_vars.get("HOME"), Some(EnvAction::Set(val)) if val == "/test/home")
+      );
+    }
     // Should have NH variables from with_nh_env
     assert!(
       matches!(cmd.env_vars.get("NH_TEST"), Some(EnvAction::Set(val)) if val == "nh_value")
